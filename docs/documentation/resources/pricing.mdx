@@ -98,7 +98,7 @@ Critical support, compliance, and control for large-scale enterprises.
 
 ## Usage-based pricing
 
-Pay only for what you use with transparent, per-operation pricing. All API endpoints use a unified pricing structure for token costs.
+Pay only for what you use with transparent, per-operation pricing. All API endpoints use a unified pricing structure for token costs, except decision models, which are priced per model.
 
 ### Pricing Table
 
@@ -112,10 +112,15 @@ Pay only for what you use with transparent, per-operation pricing. All API endpo
 | **Exa Search Tool** | \$0.04 | per search | Charged per search execution |
 | **Web Scraper Tool** | \$0.15 | per scrape | Charged per scrape execution |
 | **Night-time Discount** | 50% off tokens | 8 PM - 6 AM PT | Swarm Completions only |
+| **Decision Models: `jev-latest`, `jev-preview`, `jev-1.13.0`** | \$0.0483 | per 1M input tokens | Output tokens free. No agent fee, no night-time discount |
+| **Decision Models: `clef`** | \$0.276 | per 1M input tokens | Output tokens free. No agent fee, no night-time discount |
+| **Decision Models: `clef-flash`** | \$0.1035 | per 1M input tokens | Output tokens free. No agent fee, no night-time discount |
+
+Decision model prices are listed with each model by [`GET /v1/decision-model/models`](/docs/documentation/capabilities/decision-models#list-decision-models).
 
 ### Unified Pricing
 
-All API endpoints use the same token pricing:
+All API endpoints except decision models use the same token pricing:
 - **Input Tokens**: \$6.50 per 1 million tokens
 - **Output Tokens**: \$18.50 per 1 million tokens
 
@@ -127,6 +132,7 @@ This applies to:
 | Graph Workflow                   | Agent cost applies (\$0.01/agent), billed at agent-completion token rates; no night-time discount |
 | Batched Grid Workflow            | Agent cost applies (\$0.01/agent), billed at agent-completion token rates; no night-time discount |
 | Auto Agent Builder               | Agent cost applies (\$0.01/agent), billed at agent-completion token rates; no night-time discount |
+| Decision Model Completions       | Not on the unified rates: billed per model, \$0.0483 (`jev` models), \$0.276 (`clef`) or \$0.1035 (`clef-flash`) per 1M input tokens, output free; no per-agent fee; no night-time discount. See [`GET /v1/decision-model/models`](/docs/documentation/capabilities/decision-models#list-decision-models) |
 
 ### Discounts
 

@@ -1,0 +1,337 @@
+---
+title: "Use the TypeSafe SDK with the Swarms API"
+description: "Point the official TypeSafe SDKs (typesafe-sdk for Python, @typesafe-ai/sdk for JavaScript) at https://api.swarms.world with a Swarms API key, and move an existing TypeSafe integration onto Swarms billing by changing two lines."
+---
+
+## What This Example Shows
+
+- The Python (`typesafe-sdk`) and JavaScript (`@typesafe-ai/sdk`) clients pointed at `https://api.swarms.world` with a Swarms API key
+- `system_one` / `systemOne`, `models.list()`, and the Python async client
+- How to read the amount charged from `x-swarms-total-cost` and the request ID from `x-typesafe-request-id`
+- The error classes the SDKs raise, and the three places the Swarms API answers differently from TypeSafe's
+
+## Why This Matters
+
+The Swarms API serves TypeSafe's `POST /v1/systemone` in TypeSafe's exact request and response format. If you already call TypeSafe through its SDK, you keep your questions, your answer handling and your types. You change two things: the base URL and the API key. Usage is then billed to your Swarms balance alongside your agent and swarm calls, at \$0.0483 per 1M input tokens on the `jev` models, with output free.
+
+## Step 1: Install
+
+<Tabs>
+  <Tab title="Python">
+    ```bash
+    pip install typesafe-sdk
+    ```
+  </Tab>
+  <Tab title="JavaScript">
+    ```bash
+    npm install @typesafe-ai/sdk
+    ```
+  </Tab>
+</Tabs>
+
+```bash
+export SWARMS_API_KEY="your-api-key-here"
+```
+
+## Step 2: Change Two Lines
+
+<Tabs>
+  <Tab title="Python">
+    ```python
+    import os
+
+    from typesafe_sdk import Choice, Noul, TypeSafeClient
+
+    client = TypeSafeClient(
+        api_key=os.environ["SWARMS_API_KEY"],
+        base_url="https://api.swarms.world",
+    )
+    ```
+  </Tab>
+  <Tab title="JavaScript">
+    ```javascript
+    import { TypeSafeClient, choice, noul } from "@typesafe-ai/sdk";
+
+    const client = new TypeSafeClient({
+      apiKey: process.env.SWARMS_API_KEY,
+      baseURL: "https://api.swarms.world",
+    });
+    ```
+  </Tab>
+</Tabs>
+
+Both SDKs also read `TYPESAFE_API_KEY` and `TYPESAFE_BASE_URL` from the environment when the arguments are omitted. Setting `TYPESAFE_BASE_URL=https://api.swarms.world` and `TYPESAFE_API_KEY` to your Swarms key moves an existing integration without touching its code.
+
+The SDKs send the key as `Authorization: Bearer <key>`, which the Swarms API accepts in place of `x-api-key`.
+
+## Step 3: Ask Questions with `system_one` / `systemOne`
+
+<Tabs>
+  <Tab title="Python">
+    ```python
+    import os
+
+    from typesafe_sdk import Choice, Noul, TypeSafeClient
+
+    client = TypeSafeClient(api_key=os.environ["SWARMS_API_KEY"], base_url="https://api.swarms.world")
+
+    result = client.system_one(
+        state="I was charged twice. Please help.",
+        questions={
+            "billing": Noul(instructions="Is this about billing?"),
+            "tone": Choice(instructions="What is the tone?", criteria={"calm": None, "angry": None}),
+        },
+    )
+
+    print(result.model)
+    print(result.nouls["billing"].noul)
+    print(result.choices["tone"].choice, result.choices["tone"].confidence)
+    print(result.usage.input_tokens, result.usage.output_tokens)
+    ```
+  </Tab>
+  <Tab title="JavaScript">
+    ```javascript
+    import { TypeSafeClient, choice, noul } from "@typesafe-ai/sdk";
+
+    const client = new TypeSafeClient({
+      apiKey: process.env.SWARMS_API_KEY,
+      baseURL: "https://api.swarms.world",
+    });
+
+    const result = await client.systemOne({
+      state: "I was charged twice. Please help.",
+      questions: {
+        billing: noul("Is this about billing?"),
+        tone: choice("What is the tone?", { calm: null, angry: null }),
+      },
+    });
+
+    console.log(result.model);
+    console.log(result.answers.billing.noul);
+    console.log(result.answers.tone.choice, result.answers.tone.confidence);
+    console.log(result.usage.input_tokens, result.usage.output_tokens);
+    ```
+  </Tab>
+</Tabs>
+
+The SDKs send `jev-latest` unless you set a default model on the client or pass `model` per call. `result.model` is the version that answered.
+
+## Step 4: List the Models
+
+<Tabs>
+  <Tab title="Python">
+    ```python
+    import os
+
+    from typesafe_sdk import TypeSafeClient
+
+    client = TypeSafeClient(api_key=os.environ["SWARMS_API_KEY"], base_url="https://api.swarms.world")
+
+    for model in client.models.list().models:
+        print(model.name, model.description)
+    ```
+  </Tab>
+  <Tab title="JavaScript">
+    ```javascript
+    import { TypeSafeClient } from "@typesafe-ai/sdk";
+
+    const client = new TypeSafeClient({
+      apiKey: process.env.SWARMS_API_KEY,
+      baseURL: "https://api.swarms.world",
+    });
+
+    for (const model of await client.models.list()) {
+      console.log(model.name, model.description);
+    }
+    ```
+  </Tab>
+</Tabs>
+
+`models.list()` calls `GET /v1/models` with the SDK's `X-TypeSafe-SDK` header, and the Swarms API answers that request with its decision models instead of its LLM catalog. Each `description` includes the model's price, for example `TypeSafe decision model. $0.0483 per 1M input tokens, $0.0 per 1M output tokens.` For the prices as numbers, call [`GET /v1/decision-model/models`](/docs/documentation/capabilities/decision-models#list-decision-models).
+
+## Step 5: The Async Client
+
+```python
+import asyncio
+import os
+
+from typesafe_sdk import AsyncTypeSafeClient, Noul
+
+TICKETS = [
+    "The dashboard is down for our whole team.",
+    "How do I change my invoice email?",
+    "Love the new release, thanks!",
+]
+
+
+async def main():
+    async with AsyncTypeSafeClient(
+        api_key=os.environ["SWARMS_API_KEY"],
+        base_url="https://api.swarms.world",
+    ) as client:
+        results = await asyncio.gather(
+            *(
+                client.system_one(state=ticket, questions={"urgent": Noul(instructions="Is this urgent?")})
+                for ticket in TICKETS
+            )
+        )
+    for ticket, result in zip(TICKETS, results):
+        print(f"{result.nouls['urgent'].noul:.2f}  {ticket}")
+
+
+asyncio.run(main())
+```
+
+`AsyncTypeSafeClient` takes the same arguments as `TypeSafeClient`, and `system_one` and `models.list()` are awaited.
+
+## Step 6: Read the Cost and the Request ID
+
+The response body is TypeSafe's, so it has no cost field. The Swarms API puts the amount charged, in USD, in the `x-swarms-total-cost` header and the job ID in `x-typesafe-request-id`.
+
+<Tabs>
+  <Tab title="Python">
+    ```python
+    import os
+
+    from typesafe_sdk import Noul, TypeSafeClient
+
+    client = TypeSafeClient(api_key=os.environ["SWARMS_API_KEY"], base_url="https://api.swarms.world")
+
+    result = client.system_one(
+        state="Site is down",
+        questions={"urgent": Noul(instructions="Is this urgent?")},
+    )
+    print("request id:", result.request_id)
+    print("charged (USD):", result.raw_http_response.headers["x-swarms-total-cost"])
+    ```
+  </Tab>
+  <Tab title="JavaScript">
+    ```javascript
+    import { TypeSafeClient, noul } from "@typesafe-ai/sdk";
+
+    const client = new TypeSafeClient({
+      apiKey: process.env.SWARMS_API_KEY,
+      baseURL: "https://api.swarms.world",
+    });
+
+    const { data, response, requestId } = await client
+      .systemOne({ state: "Site is down", questions: { urgent: noul("Is this urgent?") } })
+      .withResponse();
+
+    console.log(data.answers.urgent.noul);
+    console.log("request id:", requestId);
+    console.log("charged (USD):", response.headers.get("x-swarms-total-cost"));
+    ```
+  </Tab>
+</Tabs>
+
+## Step 7: Handle Errors
+
+The SDKs raise a typed error for each status. The names differ between the two SDKs:
+
+| Status | When the Swarms API returns it | Python | JavaScript |
+|---|---|---|---|
+| `400` | Unknown model, or the questions were rejected (empty `choice` criteria, a `noul` with neither instructions nor criteria) | `TypeSafeBadRequestError` | `BadRequestError` |
+| `401` | Missing or invalid Swarms API key | `TypeSafeAuthenticationError` | `AuthenticationError` |
+| `422` | The request body failed validation, including an unknown question `type` | `TypeSafeUnprocessableEntityError` | `UnprocessableEntityError` |
+| `402` | Credit balance at or below \$1.00 | `TypeSafeAPIError` with `status == 402` | `APIError` with `status === 402` |
+
+<Tabs>
+  <Tab title="Python">
+    ```python
+    import os
+
+    from typesafe_sdk import (
+        Noul,
+        TypeSafeAPIError,
+        TypeSafeAuthenticationError,
+        TypeSafeBadRequestError,
+        TypeSafeClient,
+        TypeSafeUnprocessableEntityError,
+    )
+
+    client = TypeSafeClient(api_key=os.environ["SWARMS_API_KEY"], base_url="https://api.swarms.world")
+
+    try:
+        client.system_one(
+            state="Site is down",
+            questions={"urgent": Noul(instructions="Is this urgent?")},
+            model="not-a-model",
+        )
+    except TypeSafeBadRequestError as error:
+        print("bad request:", error.status, error.body)
+    except TypeSafeAuthenticationError:
+        print("check SWARMS_API_KEY")
+    except TypeSafeUnprocessableEntityError as error:
+        print("invalid body:", error.body)
+    except TypeSafeAPIError as error:
+        print("other API error:", error.status, error.request_id)
+    ```
+  </Tab>
+  <Tab title="JavaScript">
+    ```javascript
+    import {
+      APIError,
+      AuthenticationError,
+      BadRequestError,
+      TypeSafeClient,
+      UnprocessableEntityError,
+      noul,
+    } from "@typesafe-ai/sdk";
+
+    const client = new TypeSafeClient({
+      apiKey: process.env.SWARMS_API_KEY,
+      baseURL: "https://api.swarms.world",
+    });
+
+    try {
+      await client.systemOne({
+        model: "not-a-model",
+        state: "Site is down",
+        questions: { urgent: noul("Is this urgent?") },
+      });
+    } catch (error) {
+      if (error instanceof BadRequestError) {
+        console.log("bad request:", error.status, error.body);
+      } else if (error instanceof AuthenticationError) {
+        console.log("check SWARMS_API_KEY");
+      } else if (error instanceof UnprocessableEntityError) {
+        console.log("invalid body:", error.body);
+      } else if (error instanceof APIError) {
+        console.log("other API error:", error.status, error.requestId);
+      } else {
+        throw error;
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+Both SDKs retry `429` and `5xx` responses twice by default. A `502` from the Swarms API means the decision model provider was unavailable, and nothing is charged for it.
+
+## Differences from the TypeSafe API
+
+| Behavior | TypeSafe API | Swarms API |
+|---|---|---|
+| Unknown question `type` | `400` | `422`, naming the field. The SDKs raise `TypeSafeUnprocessableEntityError` / `UnprocessableEntityError` instead of the bad-request error. |
+| `422` error entries | Echo the request back in `input` | No `input` echo |
+| `release_date` in `models.list()` | A date | An empty string |
+
+The request fields, the answer shapes, and the `400` bodies for an unknown model, empty `choice` criteria, or a `noul` with neither instructions nor criteria are the same as TypeSafe's.
+
+## The Cost Math
+
+| | Value |
+|---|---|
+| `jev` input price on Swarms | \$0.0483 per 1M tokens |
+| Output price | Free |
+| A ~400-token `system_one` call | about \$0.00002 |
+| 1,000,000 such calls | about \$19.32 |
+
+The exact charge for each call is in `x-swarms-total-cost`.
+
+## Next Steps
+
+- [Decision Models Quickstart](/docs/examples/examples/decision-models-quickstart) for the same models through the Swarms-format endpoint, with the cost in the response body
+- [Decision Model Completions](/docs/documentation/capabilities/decision-models) for every field, error code and price
+- [Triage 10,000 Support Tickets for About 20 Cents](/docs/examples/examples/decision-model-ticket-triage)

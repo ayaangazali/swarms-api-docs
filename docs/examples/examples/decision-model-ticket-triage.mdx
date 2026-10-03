@@ -1,0 +1,232 @@
+---
+title: "Triage 10,000 Support Tickets for About 20 Cents"
+description: "Route every support ticket with one decision model request: a choice for the department, a score for frustration and a noul for urgency, with confidence-based routing rules, asyncio concurrency and the cost math."
+---
+
+## What This Example Shows
+
+- One `/v1/decision-model/completions` request per ticket: a `choice` for the department, a `score` for frustration and a `noul` for urgency
+- Routing rules built on the probabilities: send a ticket to a human when the department `confidence` is below 0.6, and page on-call when urgency is above 0.8 and frustration is at least 1
+- Running thousands of tickets concurrently with `asyncio` and `httpx`, inside your rate limit
+- The cost math: about \$0.00002 per ticket, or about \$0.20 per 10,000 tickets
+
+## Why This Matters
+
+Ticket routing is three judgment calls per ticket: which team, how upset, how urgent. A human triager does a few hundred a day. An LLM agent can do it, but you pay output tokens for every label and then parse free text back into a route. A decision model answers all three questions in one request, returns each answer as a typed field with a probability, and on the `jev` models charges only for input tokens. The probabilities are what make the routing safe: you automate the tickets the model is sure about and send the rest to a person.
+
+## Step 1: Setup
+
+```bash
+pip install httpx
+```
+
+```bash
+export SWARMS_API_KEY="your-api-key-here"
+```
+
+## Step 2: Define the Questions
+
+The same three questions are asked about every ticket. Each ticket is sent as the `state`.
+
+```python
+QUESTIONS = {
+    "department": {
+        "type": "choice",
+        "instructions": "Which team should handle this ticket?",
+        "criteria": {
+            "billing": "Payments, invoices or refunds",
+            "technical": "Bugs, errors or outages",
+            "account": "Login, access or account settings",
+            "sales": "Pricing, plans or upgrades",
+        },
+    },
+    "frustration": {
+        "type": "score",
+        "instructions": "How frustrated is the customer?",
+        "criteria": ["Calm", "Frustrated", "Angry"],
+    },
+    "is_urgent": {
+        "type": "noul",
+        "instructions": "Is this support request urgent?",
+        "criteria": {"true": "Customers are blocked right now"},
+    },
+}
+```
+
+## Step 3: Write the Routing Rules
+
+```python
+HUMAN_REVIEW_BELOW = 0.6
+PAGE_URGENCY_ABOVE = 0.8
+PAGE_FRUSTRATION_AT_LEAST = 1
+
+
+def route(answers):
+    department = answers["department"]
+    if department["confidence"] < HUMAN_REVIEW_BELOW:
+        queue = "human-review"
+    else:
+        queue = department["choice"]
+    page_on_call = (
+        answers["is_urgent"]["noul"] > PAGE_URGENCY_ABOVE
+        and answers["frustration"]["score"] >= PAGE_FRUSTRATION_AT_LEAST
+    )
+    return queue, page_on_call
+```
+
+- `department.confidence` is how sure the model is of its pick. Below 0.6, a person decides.
+- `is_urgent.noul` is the probability that the ticket is urgent.
+- `frustration.score` is the expected level on your scale, from 0 ("Calm") to 2 ("Angry"). It can fall between levels, so `>= 1` means "at least Frustrated".
+
+## Step 4: Classify Every Ticket Concurrently
+
+```python
+import asyncio
+import os
+
+import httpx
+
+API_URL = "https://api.swarms.world/v1/decision-model/completions"
+CONCURRENCY = 20
+MAX_ATTEMPTS = 5
+
+QUESTIONS = {
+    "department": {
+        "type": "choice",
+        "instructions": "Which team should handle this ticket?",
+        "criteria": {
+            "billing": "Payments, invoices or refunds",
+            "technical": "Bugs, errors or outages",
+            "account": "Login, access or account settings",
+            "sales": "Pricing, plans or upgrades",
+        },
+    },
+    "frustration": {
+        "type": "score",
+        "instructions": "How frustrated is the customer?",
+        "criteria": ["Calm", "Frustrated", "Angry"],
+    },
+    "is_urgent": {
+        "type": "noul",
+        "instructions": "Is this support request urgent?",
+        "criteria": {"true": "Customers are blocked right now"},
+    },
+}
+
+HUMAN_REVIEW_BELOW = 0.6
+PAGE_URGENCY_ABOVE = 0.8
+PAGE_FRUSTRATION_AT_LEAST = 1
+
+TICKETS = [
+    {"id": "T-1001", "plan": "enterprise", "message": "Checkout has been failing for every customer for the last hour. We are losing sales!"},
+    {"id": "T-1002", "plan": "free", "message": "How do I change the email address my invoices go to?"},
+    {"id": "T-1003", "plan": "pro", "message": "I was charged twice this month and nobody has answered my last two emails."},
+    {"id": "T-1004", "plan": "pro", "message": "Is there a discount if we move to annual billing?"},
+]
+
+
+def route(answers):
+    department = answers["department"]
+    if department["confidence"] < HUMAN_REVIEW_BELOW:
+        queue = "human-review"
+    else:
+        queue = department["choice"]
+    page_on_call = (
+        answers["is_urgent"]["noul"] > PAGE_URGENCY_ABOVE
+        and answers["frustration"]["score"] >= PAGE_FRUSTRATION_AT_LEAST
+    )
+    return queue, page_on_call
+
+
+async def classify(client, semaphore, ticket):
+    payload = {"model_name": "jev-latest", "state": ticket, "questions": QUESTIONS}
+    async with semaphore:
+        for attempt in range(MAX_ATTEMPTS):
+            response = await client.post(API_URL, json=payload)
+            if response.status_code not in (429, 502):
+                break
+            await asyncio.sleep(float(response.headers.get("retry-after", 2**attempt)))
+        response.raise_for_status()
+        return response.json()
+
+
+async def main():
+    semaphore = asyncio.Semaphore(CONCURRENCY)
+    headers = {"x-api-key": os.environ["SWARMS_API_KEY"]}
+    async with httpx.AsyncClient(headers=headers, timeout=30) as client:
+        results = await asyncio.gather(*(classify(client, semaphore, ticket) for ticket in TICKETS))
+
+    total_cost = 0.0
+    queues = {}
+    for ticket, result in zip(TICKETS, results):
+        queue, page_on_call = route(result["answers"])
+        queues[queue] = queues.get(queue, 0) + 1
+        total_cost += result["usage"]["total_cost"]
+        flag = "  PAGE ON-CALL" if page_on_call else ""
+        print(f"{ticket['id']}: {queue}{flag}")
+
+    print(f"\nRouted {len(results)} tickets: {queues}")
+    print(f"Total cost: ${total_cost:.6f} (${total_cost / len(results):.8f} per ticket)")
+
+
+asyncio.run(main())
+```
+
+Replace `TICKETS` with your own export. The rest of the script doesn't change between 4 tickets and 10,000.
+
+- The semaphore caps how many requests are in flight at once.
+- A `429` means you hit your rate limit. The script waits for the `Retry-After` header before trying again.
+- A `502` means the decision model provider was briefly unavailable. The script backs off and retries. Neither status is charged.
+
+<Warning>
+**Check your rate limit before a large run.** Free-tier keys allow 100 requests per minute and 1,200 per day, so 10,000 tickets take more than eight days. Pro and Ultra keys allow 2,000 per minute and 100,000 per day, enough for the same run in about five minutes once `CONCURRENCY` is high enough to reach that rate. See [Rate Limits](/docs/documentation/resources/ratelimits).
+</Warning>
+
+## Step 5: Read the Output
+
+For each ticket, the script prints the queue it was routed to and whether to page on-call, then the totals:
+
+```text
+T-1001: technical  PAGE ON-CALL
+T-1002: billing
+T-1003: billing
+T-1004: sales
+
+Routed 4 tickets: {'technical': 1, 'billing': 2, 'sales': 1}
+Total cost: $0.000081 ($0.00002025 per ticket)
+```
+
+The routes and costs above are illustrative. Your output depends on the tickets and on the token counts the model reports.
+
+## The Cost Math
+
+| | Value |
+|---|---|
+| Input tokens per ticket (three questions plus a short ticket) | about 420 |
+| `jev-latest` input price | \$0.0483 per 1M tokens |
+| Output price | Free |
+| Cost per ticket | 420 × \$0.0483 / 1,000,000 ≈ **\$0.00002** |
+| Cost per 10,000 tickets | ≈ **\$0.20** |
+
+A longer ticket costs more because the ticket text is the input. Every result's `usage.total_cost` is the exact charge, so summing it, as the script does, gives the real bill for the run.
+
+<Note>
+Both decision model routes need a credit balance above \$1.00, the same minimum as the other completion endpoints. Nothing is charged for a request that fails.
+</Note>
+
+## Adapting the Pattern
+
+| Workload | `choice` | `score` | `noul` |
+|---|---|---|---|
+| **Support triage** | Department | Frustration | Urgent? |
+| **Sales inbound** | Product line | Buying intent | Asking for a quote? |
+| **Content moderation** | Policy category | Severity | Needs removal? |
+| **Bug reports** | Component | Severity | Reproducible from the report? |
+
+Change `QUESTIONS` and `route`. The concurrency, retry and cost tracking stay the same.
+
+## Next Steps
+
+- [Decision Models Quickstart](/docs/examples/examples/decision-models-quickstart) for how each answer field is read
+- [Cut Agent Costs: Gate LLM Calls with a Decision Model](/docs/examples/examples/decision-model-agent-gate) to send only the tickets that need a written reply to an agent
+- [Decision Model Completions](/docs/documentation/capabilities/decision-models) for every field, error code and price

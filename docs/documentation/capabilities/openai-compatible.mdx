@@ -999,6 +999,10 @@ for model in models.data[:10]:
     print(f"{model.id} (owned_by: {model.owned_by})")
 ```
 
+<Note>
+OpenAI clients get the same list from `GET /v1/models` as before. Only a request carrying the TypeSafe SDK's `X-TypeSafe-SDK` header gets the [decision models](/docs/documentation/capabilities/decision-models) instead, in TypeSafe's format, so that SDK's `models.list()` works against this API.
+</Note>
+
 ---
 
 ## Differences from the OpenAI API

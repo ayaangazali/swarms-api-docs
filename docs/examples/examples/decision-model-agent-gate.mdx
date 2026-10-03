@@ -1,0 +1,165 @@
+---
+title: "Cut Agent Costs: Gate LLM Calls with a Decision Model"
+description: "Use a decision model to decide whether a task needs a full /v1/agent/completions call, then to judge the agent's answer before it ships. A ~400-token decision costs about $0.00002; a 500-in/300-out agent call costs about $0.0088."
+---
+
+## What This Example Shows
+
+- A `noul` pre-check that decides whether a request needs a full `/v1/agent/completions` call or can get a canned reply
+- A `score` check that judges the agent's draft before it ships, and escalates weak drafts to a person
+- The cost comparison: a ~400-token decision call against a 500-in/300-out agent call
+
+## Why This Matters
+
+Many requests that reach an agent don't need one: "where do I reset my password", "thanks!", duplicates, spam. Each still pays for a full LLM call. A decision model can answer "does this need an agent?" for about \$0.00002, more than 400 times less than a short agent call. Skip a small fraction of agent calls and the checks pay for themselves. The same model then grades the agent's draft, so a weak answer goes to a person instead of the customer.
+
+## Step 1: Setup
+
+```bash
+pip install requests
+```
+
+```bash
+export SWARMS_API_KEY="your-api-key-here"
+```
+
+## Step 2: The Full Pipeline
+
+```python
+import os
+
+import requests
+
+BASE_URL = "https://api.swarms.world"
+HEADERS = {"x-api-key": os.environ["SWARMS_API_KEY"], "Content-Type": "application/json"}
+
+NEEDS_AGENT_ABOVE = 0.5
+SHIP_SCORE_AT_LEAST = 1.5
+
+CANNED_REPLY = "Thanks for reaching out! You can find the answer in our help center: https://example.com/help"
+
+AGENT_CONFIG = {
+    "agent_name": "Support Writer",
+    "description": "Writes replies to customer support requests",
+    "system_prompt": "You are a support engineer. Answer the customer's request accurately and briefly.",
+    "model_name": "gpt-5.4",
+    "max_loops": 1,
+    "max_tokens": 400,
+}
+
+
+def decide(state, questions):
+    response = requests.post(
+        f"{BASE_URL}/v1/decision-model/completions",
+        headers=HEADERS,
+        json={"model_name": "jev-latest", "state": state, "questions": questions},
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def needs_agent(request_text):
+    result = decide(
+        request_text,
+        {
+            "needs_agent": {
+                "type": "noul",
+                "instructions": "Does this request need a researched, written answer, rather than a canned reply or a link to the help center?",
+                "criteria": {
+                    "true": "A specific question about the customer's own account, data, bug or setup",
+                    "false": "A greeting, thanks, spam, or a common question the help center already answers",
+                },
+            }
+        },
+    )
+    return result["answers"]["needs_agent"]["noul"], result["usage"]["total_cost"]
+
+
+def run_agent(request_text):
+    response = requests.post(
+        f"{BASE_URL}/v1/agent/completions",
+        headers=HEADERS,
+        json={"agent_config": AGENT_CONFIG, "task": request_text},
+        timeout=120,
+    )
+    response.raise_for_status()
+    result = response.json()
+    return result["outputs"], result["usage"]["total_cost"]
+
+
+def judge(request_text, draft):
+    result = decide(
+        {"request": request_text, "draft_reply": draft},
+        {
+            "quality": {
+                "type": "score",
+                "instructions": "How well does the draft reply resolve the request?",
+                "criteria": [
+                    "Wrong, off-topic or unsafe to send",
+                    "Partly answers the request",
+                    "Fully and correctly answers the request",
+                ],
+            }
+        },
+    )
+    return result["answers"]["quality"]["score"], result["usage"]["total_cost"]
+
+
+def handle(request_text):
+    probability, cost = needs_agent(request_text)
+    if probability <= NEEDS_AGENT_ABOVE:
+        return {"action": "canned", "reply": CANNED_REPLY, "cost": cost}
+
+    draft, agent_cost = run_agent(request_text)
+    score, judge_cost = judge(request_text, draft)
+    total = cost + agent_cost + judge_cost
+    if score >= SHIP_SCORE_AT_LEAST:
+        return {"action": "ship", "reply": draft, "score": score, "cost": total}
+    return {"action": "escalate", "draft": draft, "score": score, "cost": total}
+
+
+if __name__ == "__main__":
+    requests_in = [
+        "Thanks, that fixed it!",
+        "Our webhook deliveries started failing with 401 after we rotated our signing secret this morning. What do we need to update?",
+    ]
+    for request_text in requests_in:
+        outcome = handle(request_text)
+        print(f"{outcome['action']:<9} ${outcome['cost']:.6f}  {request_text[:60]}")
+```
+
+## Step 3: How the Gate Decides
+
+**Before the agent.** `needs_agent` asks one `noul` question. Its `criteria` spell out what counts as yes and as no, which helps the model on borderline requests. At or below 0.5, the request gets the canned reply and no agent call is made.
+
+**After the agent.** `judge` sends the request and the agent's `outputs` together as the `state`. A state can be a JSON object, so the agent's output goes in as it came back, without parsing. The `score` question rates the draft from 0 ("Wrong, off-topic or unsafe to send") to 2 ("Fully and correctly answers the request"). `score` is the expected level, so 1.5 means the model leans toward "fully answers". Drafts below that go to a person.
+
+Tune both thresholds on your own traffic. Raising `NEEDS_AGENT_ABOVE` skips more agent calls but sends more borderline requests the canned reply.
+
+## The Cost Math
+
+| Call | Tokens | Rate | Cost |
+|---|---|---|---|
+| Agent completion | 500 in, 300 out | \$6.50 / \$18.50 per 1M | 500 × \$6.50 / 1M + 300 × \$18.50 / 1M = **\$0.0088** |
+| Decision model check | ~400 in | \$0.0483 per 1M, output free | 400 × \$0.0483 / 1M ≈ **\$0.00002** |
+
+For 10,000 requests where the gate skips 20% of agent calls:
+
+| | Without the gate | With the gate |
+|---|---|---|
+| Agent calls | 10,000 × \$0.0088 = \$88.00 | 8,000 × \$0.0088 = \$70.40 |
+| `needs_agent` checks | | 10,000 × \$0.00002 = \$0.20 |
+| `judge` checks | | 8,000 × \$0.00002 = \$0.16 |
+| **Total** | **\$88.00** | **\$70.76** |
+
+One check costs about 1/440th of the agent call. The gate pays for both checks once it skips about 0.5% of agent calls. The 20% above is an example: measure the skip rate on your own traffic.
+
+Agent prices are the standard token rates from [Pricing](/docs/documentation/resources/pricing). Each response's `usage.total_cost` is the exact charge, which is what `handle` adds up.
+
+## Next Steps
+
+- [Decision Models Quickstart](/docs/examples/examples/decision-models-quickstart) for how each answer field is read
+- [Triage 10,000 Support Tickets for About 20 Cents](/docs/examples/examples/decision-model-ticket-triage) for running checks concurrently
+- [Agent Completions](/docs/documentation/capabilities/agent) for every agent option
+- [Decision Model Completions](/docs/documentation/capabilities/decision-models) for every field, error code and price

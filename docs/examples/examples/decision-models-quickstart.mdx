@@ -1,0 +1,200 @@
+---
+title: "Decision Models Quickstart: Typed Answers Instead of Text"
+description: "Ask a decision model a choice, a score and a yes/no question in one request, read the probabilities it returns, list the models and their prices, and see what the request cost."
+---
+
+## What This Example Shows
+
+- One request to `/v1/decision-model/completions` with a `choice`, a `score` and a `noul` question, in curl and Python `requests`
+- How to read `choice`, `probabilities` and `confidence`; `score` and `legend`; and `noul`
+- How to list the decision models and their prices with `GET /v1/decision-model/models`
+- How to read what the request cost from `usage.total_cost`
+
+## Why This Matters
+
+Most "AI decisions" in production are classification: which queue, how severe, yes or no. Asking an LLM agent for that means parsing free text, guessing a confidence, and paying output-token rates for a one-word answer. A decision model returns the answer as a typed field with a probability you can threshold on, asks every question about the same input in one call, and charges only for input tokens on the `jev` models. See [Decision Model Completions](/docs/documentation/capabilities/decision-models) for the full reference.
+
+## Step 1: Setup
+
+```bash
+pip install requests python-dotenv
+```
+
+```bash
+export SWARMS_API_KEY="your-api-key-here"
+```
+
+## Step 2: List the Models and Their Prices
+
+```bash
+curl "https://api.swarms.world/v1/decision-model/models" \
+  -H "x-api-key: $SWARMS_API_KEY"
+```
+
+```python
+import os
+
+import requests
+from dotenv import load_dotenv
+
+load_dotenv()
+
+BASE_URL = "https://api.swarms.world"
+HEADERS = {"x-api-key": os.environ["SWARMS_API_KEY"]}
+
+models = requests.get(f"{BASE_URL}/v1/decision-model/models", headers=HEADERS, timeout=30)
+models.raise_for_status()
+
+for model in models.json()["models"]:
+    print(
+        f"{model['name']:<12} {model['provider']:<10} "
+        f"${model['input_cost_per_1m']} in / ${model['output_cost_per_1m']} out per 1M tokens"
+    )
+```
+
+Each entry has `name`, `description`, `provider`, `input_cost_per_1m`, `output_cost_per_1m` and an empty `release_date`. Pass `name` as `model_name` in the next step. `jev-latest` is the default.
+
+## Step 3: Ask Three Questions in One Request
+
+The `state` is the content every question is asked about. It can be text, a JSON object or a list. Questions are keyed by names you choose, and the answers come back under the same names.
+
+<Tabs>
+  <Tab title="Shell (curl)">
+    ```bash
+    curl -X POST "https://api.swarms.world/v1/decision-model/completions" \
+      -H "x-api-key: $SWARMS_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "model_name": "jev-latest",
+        "state": {"message": "Checkout has been failing for every customer for the last hour. We are losing sales!", "customer_plan": "enterprise"},
+        "questions": {
+          "department": {"type": "choice", "instructions": "Which team should handle this ticket?", "criteria": {"billing": "Payments or refunds", "technical": "Bugs or outages", "sales": null}},
+          "frustration": {"type": "score", "instructions": "How frustrated is the customer?", "criteria": ["Calm", "Frustrated", "Angry"]},
+          "is_urgent": {"type": "noul", "instructions": "Is this support request urgent?", "criteria": {"true": "Customers are blocked right now"}}
+        }
+      }'
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+
+    import requests
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
+    BASE_URL = "https://api.swarms.world"
+    HEADERS = {"x-api-key": os.environ["SWARMS_API_KEY"]}
+
+    payload = {
+        "model_name": "jev-latest",
+        "state": {
+            "message": "Checkout has been failing for every customer for the last hour. We are losing sales!",
+            "customer_plan": "enterprise",
+        },
+        "questions": {
+            "department": {
+                "type": "choice",
+                "instructions": "Which team should handle this ticket?",
+                "criteria": {"billing": "Payments or refunds", "technical": "Bugs or outages", "sales": None},
+            },
+            "frustration": {
+                "type": "score",
+                "instructions": "How frustrated is the customer?",
+                "criteria": ["Calm", "Frustrated", "Angry"],
+            },
+            "is_urgent": {
+                "type": "noul",
+                "instructions": "Is this support request urgent?",
+                "criteria": {"true": "Customers are blocked right now"},
+            },
+        },
+    }
+
+    response = requests.post(
+        f"{BASE_URL}/v1/decision-model/completions",
+        headers=HEADERS,
+        json=payload,
+        timeout=30,
+    )
+    response.raise_for_status()
+    result = response.json()
+    answers = result["answers"]
+    ```
+  </Tab>
+</Tabs>
+
+The response:
+
+```json
+{
+  "job_id": "decision-model-3f9c…",
+  "status": "success",
+  "model_name": "jev-latest",
+  "model": "jev-1.13.0",
+  "answers": {
+    "department": {"type": "choice", "choice": "technical", "confidence": 0.98, "probabilities": {"technical": 0.99, "sales": 0.0, "billing": 0.01}},
+    "frustration": {"type": "score", "score": 1.58, "confidence": 0.37, "legend": {"0": "Calm", "1": "Frustrated", "2": "Angry"}, "probabilities": {"0": 0.0, "1": 0.42, "2": 0.58}},
+    "is_urgent": {"type": "noul", "noul": 0.97}
+  },
+  "usage": {"input_tokens": 421, "output_tokens": 73, "total_tokens": 494, "input_cost": 2.03343e-05, "output_cost": 0.0, "total_cost": 2.03343e-05},
+  "timestamp": "2026-10-03T13:47:56.151066+00:00"
+}
+```
+
+`model_name` is what you asked for. `model` is the version that answered, so `jev-latest` resolves to `jev-1.13.0` here.
+
+## Step 4: Read the Answers
+
+Continuing the Python example:
+
+```python
+department = answers["department"]
+print(f"Route to {department['choice']} (confidence {department['confidence']:.2f})")
+for option, probability in sorted(department["probabilities"].items(), key=lambda item: -item[1]):
+    print(f"  {option}: {probability:.2f}")
+
+frustration = answers["frustration"]
+level = round(frustration["score"])
+print(f"Frustration {frustration['score']:.2f}, closest level: {frustration['legend'][str(level)]}")
+
+print(f"Probability this is urgent: {answers['is_urgent']['noul']:.2f}")
+```
+
+- **choice:** `choice` is the most likely option. `probabilities` has one entry per option in your `criteria`, and `confidence` is how sure the model is of the pick. Threshold on `confidence` when a wrong route is expensive.
+- **score:** `score` is the expected level, so it can fall between levels: `1.58` sits between "Frustrated" (1) and "Angry" (2). `legend` maps each level to the description you gave it, and `probabilities` gives the weight on each level. JSON object keys are strings, so look levels up as `"0"`, `"1"`, `"2"`.
+- **noul:** `noul` is the probability, from 0 to 1, that the statement is true. Pick a cutoff that matches the cost of being wrong in each direction.
+
+## Step 5: Read the Cost
+
+```python
+usage = result["usage"]
+print(f"{usage['input_tokens']} input tokens, {usage['output_tokens']} output tokens")
+print(f"Charged ${usage['total_cost']:.8f}")
+```
+
+`total_cost` is the amount deducted from your balance. On the `jev` models output tokens are free, so only `input_cost` contributes. The same amount is also in the `x-swarms-total-cost` response header.
+
+## The Cost Math
+
+| | Value |
+|---|---|
+| Input tokens for the request above | 421 |
+| `jev-latest` input price | \$0.0483 per 1M tokens |
+| Output price | Free |
+| Cost of this request | 421 × \$0.0483 / 1,000,000 = **\$0.0000203** |
+| Cost of 10,000 requests like it | about **\$0.20** |
+
+Ask every question you have about an item in one request. The `state` is sent once, instead of once per call, and you get one `usage` and one charge for the whole set.
+
+<Note>
+Both completion routes need a credit balance above \$1.00, the same minimum as the other completion endpoints. Nothing is charged when a request fails.
+</Note>
+
+## Next Steps
+
+- [Use the TypeSafe SDK with the Swarms API](/docs/examples/examples/typesafe-sdk-with-swarms-api) to call the same models through `typesafe-sdk` or `@typesafe-ai/sdk`
+- [Triage 10,000 Support Tickets for About 20 Cents](/docs/examples/examples/decision-model-ticket-triage) for routing rules and concurrency
+- [Cut Agent Costs: Gate LLM Calls with a Decision Model](/docs/examples/examples/decision-model-agent-gate) to skip agent calls a task doesn't need
+- [Decision Model Completions](/docs/documentation/capabilities/decision-models) for every field, error code and price
