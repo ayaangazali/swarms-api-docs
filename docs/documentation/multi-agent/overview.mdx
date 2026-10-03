@@ -40,7 +40,7 @@ The request body uses the `SwarmSpec` schema. All parameters are organized in th
 | `rearrange_flow` | `string` | No | - | Instructions on how to rearrange the flow of tasks among agents, if applicable. Used with `AgentRearrange` swarm type. |
 | `messages` | `array[object] \| object` | No | - | A list of messages or a message object that the swarm should process. Used for conversational workflows like `GroupChat`. |
 | `img` | `string` | No | - | An optional image URL that may be associated with the swarm's task or representation. |
-| `stream` | `boolean` | No | `false` | A flag indicating whether the swarm should stream its output in real-time. |
+| `stream` | `boolean` | No | `false` | Stream the run as server-sent events. The full output arrives in a single `chunk` event once the swarm finishes, not as per-token deltas. |
 | `multi_agent_collab_prompt` | `boolean` | No | `true` | Inject the multi-agent collaboration prompt so agents coordinate with one another. Set to `false` to disable. |
 | `list_all_agents` | `boolean` | No | `false` | Whether to list all agents and their descriptions to one another so each agent is aware of the others. |
 | `heavy_swarm_question_agent_model_name` | `string` | No | `"gpt-5.4"` | For `HeavySwarm`: the model name to use for the question agent. |

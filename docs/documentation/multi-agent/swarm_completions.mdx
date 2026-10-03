@@ -579,7 +579,7 @@ curl -X POST "https://api.swarms.world/v1/swarm/completions" \
 
 ### Streaming
 
-Set `stream: true` to receive output as it is produced rather than waiting for the full run.
+Set `stream: true` to receive the run as server-sent events: progress events while it runs, then the full output in one `chunk` event, then usage and cost. Every swarm type streams this way; the output is not sent as per-token deltas.
 
 ```python
 response = requests.post(
