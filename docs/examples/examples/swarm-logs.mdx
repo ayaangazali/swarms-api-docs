@@ -847,7 +847,7 @@ curl -s -o /dev/null -w "%{http_code}\n" "https://api.swarms.world/v1/account/lo
 
 **Missing Log Entries**
 - Logs are filtered for privacy (no IP addresses)
-- Only completed billable runs are logged; GET requests and failed runs are not
+- The endpoint returns completion records only; GET requests and failed runs have none
 - `logs` holds the 1000 newest records; `count` is the full total
 
 **Performance Issues**
