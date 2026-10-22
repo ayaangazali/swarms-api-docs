@@ -21,7 +21,7 @@ Most teams discover their observability gap the day a customer asks "what did th
 | Per-request logs | `GET /v1/account/logs` | Per request | "What ran? Did it succeed? How much did it cost?" |
 | Live pricing rates | `GET /v1/usage/costs`, `GET /v1/models/pricing` | Snapshot (current rate card) | "What does each model cost per token, and what are the per-agent and search fees right now?" |
 | Credit balance | `GET /v1/account/credits` | Snapshot | "Do we have headroom for the next batch job?" |
-| Rate-limit headers | `X-RateLimit-*` on every response | Per request | "Are we about to get 429'd? Do we need to back off?" |
+| Rate-limit headers | `X-RateLimit-*` on every rate-limited response | Per request | "Are we about to get 429'd? Do we need to back off?" |
 
 The rule of thumb: **headers for the next millisecond, logs for the last hour (and for trend analysis — there's no separate daily-rollup endpoint), live rates before you estimate a job's cost, credits before you submit a batch.**
 
